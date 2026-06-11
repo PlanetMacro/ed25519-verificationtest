@@ -18,8 +18,8 @@ Everything in the closure is translated **transparently** (full bodies, zero
 
 | Path | What |
 |------|------|
-| `extract.sh` | Regenerates the model: Charon (Rust → LLBC) + Aeneas (LLBC → Lean). Idempotent; does not touch the hand-written files below. |
-| `gen/CurveField/Types.lean`, `Funs.lean` | **Generated — do not edit.** The field model (~40 defs). |
+| `extract.sh` | Regenerates the model: Charon (Rust → LLBC) + Aeneas (LLBC → Lean). Idempotent; does not touch the hand-written files below. **Caveat:** regeneration emits the *bare* model — the explanatory doc comments in `Types.lean`/`Funs.lean` were added post-generation (the code tokens are untouched); recover them from git history after a regeneration. |
+| `gen/CurveField/Types.lean`, `Funs.lean` | **Generated — do not edit code.** The field model (~40 defs), annotated post-generation with Rust-analog and math documentation. |
 | `gen/CurveField/*_Template.lean` | **Generated — do not edit.** Axiom skeletons for external items; diff against the hand-written versions after regenerating to spot new externals. |
 | `gen/CurveField/TypesExternal.lean`, `FunsExternal.lean` | **Hand-written models** for external items (mostly `subtle`). See modeling policy below. |
 | `Proofs/` | Hand-written proofs over the model (`Basic.lean`: external-model spec lemmas + first sanity facts). |

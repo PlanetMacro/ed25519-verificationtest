@@ -37,3 +37,6 @@ cd "$HERE"
 aeneas -backend lean -split-files -subdir CurveField -dest gen CurveField.llbc
 
 echo "Done. Now run ./check.sh to type-check the regenerated model."
+echo "NOTE: regeneration emits the BARE model — the explanatory doc comments in"
+echo "gen/CurveField/{Types,Funs}.lean (added post-generation; code tokens identical)"
+echo "are now gone. Recover them from git history (git diff against the last commit)."

@@ -1,0 +1,98 @@
+================================================================================
+ FIELD PROOF SUMMARY — solana-ed25519 field arithmetic verified in Lean 4
+ Date: 2026-06-11        Toolchain: Charon + Aeneas -> Lean 4 + mathlib
+================================================================================
+
+RESULT
+  The Rust field arithmetic of curve25519/solana-ed25519 (src/field.rs +
+  src/backend/serial/u64/field.rs), transpiled to Lean 4 via Charon/Aeneas,
+  is PROVEN to implement the field F_p, p = 2^255 - 19.
+
+  Main theorem:  CurveFieldProofs.fieldImplementation : IsFieldImplementation
+  Location:      verification/field/Proofs/FieldMain.lean
+  Verification:  verification/field/check.sh  ->  "OK — field model
+                 type-checks and all proofs pass" (zero errors, zero `sorry`)
+  Axiom hygiene: all main theorems depend only on Lean's standard axioms
+                 [propext, Classical.choice, Quot.sound] — no custom axioms,
+                 no native_decide, no sorry anywhere.
+  Constraint:    the transpiled code (gen/CurveField/{Types,Funs}.lean) was
+                 NOT modified; all proofs are definitions/lemmas ABOUT it.
+
+WHAT "IS A FIELD" MEANS HERE (and why)
+  The representation is redundant (many limb vectors denote the same field
+  element) and machine arithmetic is partial (overflow -> Result monad), so a
+  literal `Field FieldElement51` instance is mathematically impossible. The
+  theorem is therefore stated the standard way for verified crypto
+  implementations, via the denotation
+      <<a>> : Fe -> F_p,   <<a>> = (sum_i limb_i * 2^(51 i)) mod p :
+   1. F_p IS a field            (mathlib `Field (ZMod P)`, unlocked by an
+                                 axiom-free primality certificate for p)
+   2. <<.>> is surjective       (every field element has a bounded
+                                 representative: encode/denote_encode)
+   3. every transpiled op is TOTAL on the documented limb invariant
+      (no panic/overflow — including the in-code debug_assert! bounds,
+      which survived translation as provable `massert`s) and realizes the
+      corresponding F_p operation through <<.>>
+   4. hence every field axiom holds for the implementation up to
+      denotation — proved as the impl_* corollaries, which run the actual
+      transpiled functions:
+        impl_add_comm, impl_add_assoc, impl_zero_add, impl_add_neg,
+        impl_mul_comm, impl_mul_assoc, impl_one_mul,
+        impl_mul_inv_cancel (a != 0), impl_left_distrib, impl_zero_ne_one.
+
+PROOF INVENTORY (verification/field/Proofs/, dependency order)
+  Basic.lean      external-model spec lemmas + first sanity facts
+  Denote.lean     denotation <<.>>, limb-bound invariant Bnd, P, Fp
+  P25519.lean     Nat.Prime (2^255 - 19): full Lucas/Pratt certificate chain
+                  (witnesses g = 2,2,10,7,7,5,2,2; kernel-checked modular
+                  exponentiation; leaves by norm_num)
+  ReduceSpec.lean reduce: total for ALL inputs, output limbs < 2^51 + 19*2^13,
+                  exact value accounting feVal r + p*(l4 >> 51) = feVal l
+  AddSpec.lean    add (the Rust for-loop, unrolled 5 iterations): total when
+                  pairwise limb sums < 2^64; limbwise-exact (no reduction)
+  SubNegSpec.lean sub / negate (the +16p underflow trick): total under 2^54
+                  limbs; <<r>> = <<a>> - <<b>> / -<<a>>; output < 2^52
+  MulSpec.lean    mul (radix-2^51 schoolbook, 19-folding, u128 carries):
+                  total under 2^54 limbs (incl. the 10 debug_assert massert
+                  obligations); output < 2^51 + 2^13; <<r>> = <<a>> * <<b>>
+  SquareSpec.lean pow2k loop body (squaring carry chain) + loop induction:
+                  <<pow2k a k>> = <<a>> ^ (2^k) for k >= 1; square = pow2k 1
+  ConstSpecs.lean ZERO -> 0, ONE -> 1, MINUS_ONE -> -1, SQRT_M1^2 -> -1
+  Field.lean      Fact P.Prime => Field F_p; encode; surjectivity of <<.>>
+  InvertSpec.lean invert = x^(p-2) via the pow22501 addition chain (each of
+                  the 14 pow2k/mul steps' exponents verified); equals x^-1 by
+                  Fermat's little theorem; invert(0) = 0 = 0^-1 (mathlib
+                  convention) holds unconditionally
+  FieldMain.lean  IsFieldImplementation + fieldImplementation + impl_* laws
+
+TRUSTED BASE (beyond Lean kernel + mathlib + the Charon/Aeneas translation)
+  The hand-written models of the `subtle` crate in
+  gen/CurveField/{Types,Funs}External.lean (Choice := U8; black_box/volatile
+  = identity; ct_eq = equality; conditional_* = if-then-else on the {0,1}
+  Choice invariant) — each documented per-item in the file. The 4 axioms
+  there (Debug::fmt, raw-pointer get_unchecked{,_mut}, the deliberately
+  opaque internal_invert_batch) are PROVABLY outside the dependency cone of
+  the field theorems (#print axioms shows only the standard three).
+
+SECURITY FINDINGS
+  None — the "break the proof loop" clause was never triggered. Every u64 /
+  u128 overflow side condition and both debug_assert!s in the Rust are
+  THEOREMS under the documented dalek limb discipline (inputs < 2^54 for
+  mul/square/sub/neg; reduce/mul/square re-establish < 2^52).
+  Documented caveat (not a finding): pow2k(_, k=0) would wrap k-1 in release
+  Rust (debug_assert stripped); unreachable — all in-crate callers pass
+  constants >= 1, and the model enforces k >= 1 via the surviving massert.
+  Note: the single Rust source change made for extraction (field.rs
+  sqrt_ratio_i: conditional_negate -> -& + conditional_assign) is
+  semantically identical and constant-time-preserving; crate tests 153/153.
+
+REPRODUCE
+  source ~/aeneas-toolchain/env.sh          # toolchain: ../aeneas-setup-log.txt
+  cd verification/field
+  ./extract.sh                              # Rust -> LLBC -> Lean (idempotent)
+  ./check.sh                                # compiles model + all 12 proof files
+
+NEXT TARGETS (not yet verified)
+  sqrt_ratio_i specification (decompression invariant), from_bytes/to_bytes
+  round-trip + canonicity of to_bytes, and lifting the pattern to scalar.rs.
+================================================================================

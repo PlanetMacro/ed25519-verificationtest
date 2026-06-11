@@ -89,3 +89,43 @@ The trusted base beyond Aeneas itself is exactly these models. Policy:
 proves first sanity facts (`ZERO`, `default`, `from_limbs`) — use it as the
 pattern; the Aeneas `step`/`progress`/`grind` tactics (see
 `verification/lean/SmokeProofs.lean`) are the workhorses for the items above.
+
+## Field theorem (Proofs/)
+
+**The transpiled code is proven to implement the field 𝔽_p, p = 2²⁵⁵−19** —
+without modifying anything in `gen/`. Main result:
+`CurveFieldProofs.fieldImplementation : IsFieldImplementation`
+([Proofs/FieldMain.lean](Proofs/FieldMain.lean)), axiom-clean
+(`propext, Classical.choice, Quot.sound` only — no `sorry`, no `native_decide`).
+
+| File | Result |
+|------|--------|
+| `Proofs/Denote.lean` | Denotation ⟪·⟫ : Fe → 𝔽_p (= mathlib `ZMod P`), limb-bound invariant `Bnd`. |
+| `Proofs/P25519.lean` | `Nat.Prime (2^255 − 19)` — full Lucas/Pratt certificate chain, kernel-checked. |
+| `Proofs/ReduceSpec.lean` | `reduce`: total, output < 2⁵², value preserved mod p (exact ℕ accounting). |
+| `Proofs/AddSpec.lean` | `add` (the Rust `for`-loop): total under pairwise-sum < 2⁶⁴, limbwise exact. |
+| `Proofs/SubNegSpec.lean` | `sub`/`negate` (16p trick): total under 2⁵⁴, ⟪·⟫ subtracts/negates. |
+| `Proofs/MulSpec.lean` | `mul` (schoolbook, 19-folded, u128 carries): total under 2⁵⁴ (incl. the in-code `debug_assert`s), ⟪·⟫ multiplies. |
+| `Proofs/SquareSpec.lean` | `pow2k` loop (induction) + `square`: ⟪·⟫ = x^(2^k). |
+| `Proofs/ConstSpecs.lean` | `ZERO`/`ONE`/`MINUS_ONE`/`SQRT_M1` denote 0, 1, −1, √−1. |
+| `Proofs/InvertSpec.lean` | `invert` = x^(p−2) via the pow22501 chain; equals x⁻¹ by Fermat. |
+| `Proofs/Field.lean` | `Fact P.Prime` ⇒ `Field 𝔽_p`; `encode` ⇒ ⟪·⟫ surjective. |
+| `Proofs/FieldMain.lean` | **`fieldImplementation`** + the field axioms at implementation level: `impl_add_comm/assoc`, `impl_zero_add`, `impl_add_neg`, `impl_mul_comm/assoc`, `impl_one_mul`, `impl_mul_inv_cancel`, `impl_left_distrib`, `impl_zero_ne_one`. |
+
+Reading of the theorem: the representation is redundant (many limb vectors
+denote one field element) and machine ops are partial, so "is a field" is
+stated the standard way for crypto implementations: 𝔽_p is a field, ⟪·⟫ is
+surjective, every transpiled op is **total on the documented invariant**
+(no overflow/panic — this includes proving the Rust `debug_assert!` bounds)
+and realizes the corresponding 𝔽_p operation through ⟪·⟫; all field axioms
+then hold for the implementation up to denotation (the `impl_*` corollaries).
+
+Trusted base beyond Lean+mathlib+Aeneas: the hand-written external models in
+`gen/CurveField/*External.lean` (the `subtle` crate, documented per-item).
+The unused axioms there (`Debug::fmt`, raw-ptr getters, the opaque batch
+helper) are NOT in the dependency cone of the field theorems.
+
+No security findings: every overflow side condition and both
+`debug_assert!`s discharged under the dalek 2⁵⁴ limb discipline. One caveat
+documented: `pow2k(_, 0)` would wrap `k−1` in release Rust (callers all pass
+constants ≥ 1; the model enforces k ≥ 1 via the surviving `massert`).

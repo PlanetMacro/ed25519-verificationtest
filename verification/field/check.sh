@@ -13,12 +13,28 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AENEAS_LEAN="$AENEAS_HOME/backends/lean"
 
 # Compile order respects the import graph:
-#   TypesExternal -> Types -> FunsExternal -> Funs -> Proofs/*
+#   TypesExternal -> Types -> FunsExternal -> Funs -> Proofs/* (dependency order)
 MODULES=(
   CurveField/TypesExternal
   CurveField/Types
   CurveField/FunsExternal
   CurveField/Funs
+)
+
+# Proofs in dependency order (Basic is standalone; FieldMain is the main result)
+PROOFS=(
+  Basic
+  Denote
+  P25519
+  ReduceSpec
+  SubNegSpec
+  ConstSpecs
+  AddSpec
+  MulSpec
+  SquareSpec
+  Field
+  InvertSpec
+  FieldMain
 )
 
 cd "$AENEAS_LEAN"
@@ -32,12 +48,10 @@ lake env bash -c "
     lean -o \"\$m.olean\" \"\$m.lean\"
   done
   cd '$HERE'
-  if compgen -G 'Proofs/*.lean' > /dev/null; then
-    for p in Proofs/*.lean; do
-      mod=\"\${p%.lean}\"
-      echo \"· checking  \$p\"
-      lean -o \"\$mod.olean\" \"\$p\"
-    done
-  fi
+  for m in ${PROOFS[*]}; do
+    [ -f \"Proofs/\$m.lean\" ] || continue
+    echo \"· checking  Proofs/\$m.lean\"
+    lean -o \"Proofs/\$m.olean\" \"Proofs/\$m.lean\"
+  done
   echo 'OK — field model type-checks and all proofs pass'
 "

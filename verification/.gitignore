@@ -1,0 +1,11 @@
+# Aeneas / Lean build artifacts
+**/.lake/
+**/*.olean
+**/*.olean.tmp
+lean/lake-manifest.json
+
+# Charon output (regenerate: charon rustc --preset=aeneas ... / field/extract.sh)
+examples/*.llbc
+examples/*.llbc.postcard
+field/*.llbc
+field/*.llbc.postcard

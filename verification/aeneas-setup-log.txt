@@ -1,0 +1,239 @@
+================================================================================
+ Aeneas formal-verification toolchain — SETUP LOG
+ Repo: anza-xyz/cryptography     Target proof assistant: Lean 4
+ Maintained by: Claude Code      Last updated: 2026-06-11
+================================================================================
+
+PURPOSE
+  Reproducible, copy-pasteable record of how the Aeneas verification toolchain
+  was installed for this repo, so a teammate can parallel the setup on a fresh
+  box. Read top-to-bottom; commands are in execution order.
+
+  Aeneas pipeline:
+     Rust source  --(Charon)-->  *.llbc  --(Aeneas)-->  Lean 4 model + lemmas
+  - Charon : a rustc driver that extracts LLBC (Low-Level Borrow Calculus).
+             Two binaries: `charon` (frontend/cargo wrapper) + `charon-driver`
+             (the rustc driver linking rustc internals + LLVM).
+  - Aeneas : OCaml tool translating LLBC into a pure functional model for a
+             proof assistant. We target Lean 4 (already installed on this box).
+
+  PINNED VERSIONS (do NOT drift — Aeneas<->Charon<->Lean<->mathlib are coupled):
+     Aeneas        : github.com/AeneasVerif/aeneas @ main (cloned 2026-06-11)
+     Charon        : pinned by aeneas/charon-pin -> 9dd7f23c8458... (v0.1.212)
+     Charon nightly: nightly-2026-06-01  (charon/charon/rust-toolchain.toml)
+     OCaml         : 5.3.0   (opam switch)
+     Lean (backend): leanprover/lean4:v4.30.0-rc2  (aeneas/backends/lean/lean-toolchain)
+     mathlib       : v4.30.0-rc2  (required by the Aeneas Lean library)
+
+--------------------------------------------------------------------------------
+ ENVIRONMENT (this machine, 2026-06-11)
+--------------------------------------------------------------------------------
+  OS     : Linux 6.8.0 (Ubuntu 24.04 "noble"), x86_64, 32 cores, 125 GiB RAM
+  rustup : 1.29.0 ; rustc/cargo stable 1.94.1   (Charon pulls its own nightly)
+  Lean   : elan present; per-project toolchain (v4.30.0-rc2) auto-installed
+  Pre-present: gcc, make, m4, git, curl, unzip, pkg-config
+
+  Two install routes are documented:
+    * MAIN (below): SYSTEM install — `sudo apt-get install` the few system deps,
+      then a standard opam/dune/lake build. This is what the active
+      ~/aeneas-toolchain/env.sh reflects. Cleanest; use this on a normal box.
+    * APPENDIX A: a fully NO-ROOT alternative (used here first, before root was
+      available) — extract the gmp .deb into $HOME, opam --disable-sandboxing
+      and --no-depexts. Use only when you cannot get sudo.
+
+  Toolchain layout (both routes):
+     ~/aeneas-toolchain/aeneas/         Aeneas clone (built via opam/dune)
+     ~/aeneas-toolchain/aeneas/charon/  Charon clone (built via rustup nightly)
+     ~/aeneas-toolchain/aeneas/backends/lean/   the Aeneas Lean library
+     ~/aeneas-toolchain/env.sh          sourceable env (PATH + opam env)
+     ~/.opam/                           opam root + OCaml 5.3.0 switch
+     <repo>/verification/               Lean project + this log
+
+  ****  source ~/aeneas-toolchain/env.sh  BEFORE EVERY STEP/SESSION  ****
+
+================================================================================
+ MAIN RECIPE (system install)
+================================================================================
+
+[STEP 1] System dependencies (the only thing that needs root)
+  sudo apt-get update
+  sudo apt-get install -y opam libgmp-dev bubblewrap m4 git curl
+  # libgmp-dev  -> gmp.h + a proper libgmp.so for OCaml `zarith`
+  # bubblewrap  -> opam build sandbox
+  # opam        -> OCaml package manager (Ubuntu's is fine)
+
+[STEP 2] opam + OCaml 5.3.0 switch
+  export OPAMROOT="$HOME/.opam"
+  opam init --yes
+  opam switch create 5.3.0 --yes
+  eval "$(opam env)"
+
+[STEP 3] Aeneas OCaml dependencies
+  export OPAMJOBS=32
+  opam install -y ppx_deriving visitors easy_logging zarith yojson core_unix \
+      odoc ocamlgraph menhir ocamlformat.0.27.0 unionFind progress domainslib
+  # With system libgmp-dev present, zarith builds cleanly and opam's depext
+  # check passes (no --no-depexts / no symlink hacks needed — cf. Appendix A).
+
+[STEP 4] Clone Aeneas + Charon (Charon at the pinned commit)
+  git clone https://github.com/AeneasVerif/aeneas ~/aeneas-toolchain/aeneas
+  cd ~/aeneas-toolchain/aeneas
+  git clone https://github.com/AeneasVerif/charon charon
+  cd charon && git checkout "$(tail -1 ../charon-pin)"      # 9dd7f23c8458...
+  # (aeneas/src/charon is a symlink -> ../charon, the canonical spot)
+
+[STEP 5] Build the Charon binaries  (NOT the full test suite)
+  source ~/aeneas-toolchain/env.sh
+  cd ~/aeneas-toolchain/aeneas/charon
+  make build-charon-rust      # cargo --release; rustup auto-fetches the nightly
+                              # -> bin/charon and bin/charon-driver
+  # Verify: ./bin/charon toolchain-version   ->  nightly-2026-06-01
+
+  *** GOTCHA we hit: the pinned nightly auto-installed with files MISSING on
+      disk even though rustup marked the components "installed". Fixes (run only
+      when NO build is active — a concurrent rustup races the download dir and
+      throws `rename '<hash>.partial' ... No such file or directory`):
+        NT=nightly-2026-06-01-x86_64-unknown-linux-gnu
+        # (i) "the 'cargo' binary ... is not applicable":
+        rustup component remove cargo --toolchain $NT && rustup component add cargo --toolchain $NT
+        # (ii) E0463 "can't find crate for std": same remove/add for
+        rust-std-x86_64-unknown-linux-gnu
+        # (iii) link error "unable to find library -lLLVM-22-rust-1.98.0-nightly":
+        #       libLLVM*.so was only in <tc>/lib/, not mirrored into rustlib/.../lib/:
+        RLIB=~/.rustup/toolchains/$NT/lib/rustlib/x86_64-unknown-linux-gnu/lib
+        ln -sf ../../../libLLVM-22-rust-1.98.0-nightly.so   "$RLIB/"
+        ln -sf ../../../libLLVM.so.22.1-rust-1.98.0-nightly "$RLIB/"
+      then re-run `make build-charon-rust`.
+      (A clean `rustup toolchain uninstall && reinstall` of the nightly avoids
+       the whack-a-mole, at the cost of a big re-download.)
+
+[STEP 6] Generate CharonVersion.ml + build Aeneas
+  cd ~/aeneas-toolchain/aeneas/charon
+  make charon-ml/src/CharonVersion.ml      # generated from charon/Cargo.toml
+  cd ~/aeneas-toolchain/aeneas
+  make                                      # dune build -> bin/aeneas (+ test_runner)
+  # Verify: ./bin/aeneas --help
+
+[STEP 7] Build the Aeneas Lean library (+ mathlib via prebuilt cache)
+  source ~/aeneas-toolchain/env.sh
+  cd ~/aeneas-toolchain/aeneas/backends/lean
+  lake exe cache get      # downloads ~8300 prebuilt mathlib oleans (~minutes,
+                          #   NOT the hours-long from-source compile). Also
+                          #   auto-installs Lean v4.30.0-rc2 via elan.
+  lake build              # compiles the Aeneas lib (Aeneas + AeneasMeta), ~1683 jobs
+
+[STEP 8] End-to-end smoke test (Rust -> LLBC -> Lean -> proof)
+  source ~/aeneas-toolchain/env.sh
+  cd <repo>/verification/examples
+  # 1. Rust -> LLBC  ( --preset=aeneas is REQUIRED or Aeneas rejects the .llbc )
+  charon rustc --preset=aeneas --dest-file smoke.llbc -- --crate-type lib --edition 2021 smoke.rs
+  # 2. LLBC -> Lean
+  aeneas -backend lean smoke.llbc -dest ./gen          # -> gen/Smoke.lean
+  # 3. type-check the model + run the proofs (reuses the built Aeneas/mathlib):
+  cd <repo>/verification/lean && ./check.sh            # -> "OK ... all proofs pass"
+
+--------------------------------------------------------------------------------
+ The env file  (~/aeneas-toolchain/env.sh)  — system-install version
+--------------------------------------------------------------------------------
+  export OPAMROOT="$HOME/.opam"
+  export AENEAS_HOME="$HOME/aeneas-toolchain/aeneas"
+  export CHARON_HOME="$AENEAS_HOME/charon"
+  export PATH="$AENEAS_HOME/bin:$CHARON_HOME/bin:$PATH"
+  if command -v opam >/dev/null 2>&1 && [ -d "$OPAMROOT" ]; then
+    eval "$(opam env 2>/dev/null)" || true
+  fi
+
+================================================================================
+ APPENDIX A — fully NO-ROOT alternative (no sudo at all)
+================================================================================
+  Use this only if you cannot apt-install. It was the route used on this box
+  before root became available; the built binaries are identical.
+
+  A1. opam binary into userspace:
+      mkdir -p ~/.local/bin
+      curl -fsSL https://github.com/ocaml/opam/releases/download/2.5.1/opam-2.5.1-x86_64-linux \
+           -o ~/.local/bin/opam && chmod +x ~/.local/bin/opam
+      export PATH="$HOME/.local/bin:$PATH"
+
+  A2. gmp dev headers WITHOUT root (download .deb, extract into $HOME):
+      mkdir -p ~/aeneas-toolchain/deps && cd /tmp
+      apt-get download libgmp-dev               # download only — no root
+      dpkg -x /tmp/libgmp-dev_*.deb ~/aeneas-toolchain/deps
+      # gmp.h ends up at deps/usr/include/x86_64-linux-gnu/gmp.h
+      # export for the C compiler (add to env.sh):
+      D=~/aeneas-toolchain/deps
+      export C_INCLUDE_PATH="$D/usr/include/x86_64-linux-gnu:$C_INCLUDE_PATH"
+      export LIBRARY_PATH="$D/usr/lib/x86_64-linux-gnu:$LIBRARY_PATH"
+
+  A3. opam without bubblewrap:
+      opam init --bare --disable-sandboxing --no-setup --yes
+      opam switch create 5.3.0 --yes && eval "$(opam env)"
+
+  A4. opam install with --no-depexts (opam can't apt-install system pkgs):
+      opam install --no-depexts -y <same dep list as STEP 3>
+
+  A5. FIX zarith's gmp link (the .deb's libgmp.so symlink dangles inside our
+      prefix, so ld grabs the non-PIC static libgmp.a and fails to build the
+      shared zarith.cmxs). Point the linker name at the real system shared lib:
+      L=~/aeneas-toolchain/deps/usr/lib/x86_64-linux-gnu
+      ln -sf /usr/lib/x86_64-linux-gnu/libgmp.so.10 "$L/libgmp.so"
+      mv -f "$L/libgmp.a" "$L/libgmp.a.disabled"
+      opam install --no-depexts -y zarith
+      # then continue at STEP 4. (libgmp.so.10 itself ships in the base system.)
+
+================================================================================
+ STATUS  (✓ done)
+================================================================================
+  ✓ opam + OCaml 5.3.0 switch
+  ✓ OCaml deps installed (incl. zarith)
+  ✓ Charon built: bin/charon + bin/charon-driver  (toolchain-version nightly-2026-06-01)
+  ✓ Aeneas built: ~/aeneas-toolchain/aeneas/bin/aeneas  (backends: fstar/coq/rocq/lean/hol4)
+  ✓ Aeneas Lean library built (1683 jobs) + mathlib cache (8297 oleans) fetched
+  ✓ Smoke test: smoke.rs -> smoke.llbc (--preset=aeneas) -> gen/Smoke.lean
+  ✓ Generated Smoke.lean type-checks against Aeneas + mathlib  (lake env lean, ~4s)
+  ✓ PROOF verified: `smoke.add_spec` (add returns x+y when no u32 overflow) — Lean-checked
+  ✓ verification/lean/check.sh — turnkey: compiles models + runs proofs (~seconds)
+
+ KEY TAKEAWAYS for a teammate:
+  - source ~/aeneas-toolchain/env.sh first, always.
+  - Charon MUST be invoked with --preset=aeneas, or Aeneas rejects the .llbc.
+  - Lean side: `lake exe cache get` first (prebuilt mathlib) — never compile
+    mathlib from source. The Aeneas Lean lib itself is compiled by `lake build`.
+  - check.sh reuses the Aeneas lib's mathlib build; don't make verification/lean a
+    second root project unless you want another multi-GB mathlib materialization.
+  - nightly-2026-06-01 auto-install was flaky on this box (STEP 5 gotchas); never
+    run `rustup component` commands while a build is auto-installing the toolchain.
+
+ NEXT PHASE (verifying the actual crypto crates):
+  Run `charon cargo --preset=aeneas` inside a target crate (e.g.
+  curve25519/solana-ed25519), then `aeneas -backend lean`. Expect iteration:
+  Charon may need a `[package.metadata.charon]` section, and inline asm / SIMD
+  intrinsics / some `unsafe` are not translatable — mark them opaque and supply
+  hand-written Lean models. Track per-module progress in verification/.
+
+================================================================================
+ ADDENDUM 2026-06-11 — FIELD ARITHMETIC EXTRACTED (verification/field/)
+================================================================================
+  solana-ed25519's field.rs + backend/serial/u64/field.rs are now fully
+  transpiled to Lean (zero errors, zero `sorry`, sqrt_ratio_i transparent).
+  Everything is turnkey in verification/field/ (extract.sh / check.sh);
+  decisions + axiom inventory in verification/field/README.md.
+
+  Key facts a teammate needs (details in that README):
+  - Scope via `--start-from crate::field --start-from
+    crate::backend::serial::u64::field` and build with --no-default-features.
+    Whole-crate extraction FAILS upstream (Aeneas Not_found crash + the
+    6000-line basepoint table + AVX2/sha2). --include without --start-from
+    yields an EMPTY llbc; --monomorphize crashes Aeneas. Use absolute
+    --dest-file paths (relative resolves against the workspace root).
+  - `--opaque 'crate::field::_::internal_invert_batch'` (iterator rev/zip,
+    dead code under these features).
+  - ONE SOURCE PATCH in src/field.rs sqrt_ratio_i: conditional_negate ->
+    (-&r) + conditional_assign. subtle's ConditionallyNegatable blanket impl
+    (for<'a> &'a T: Neg) crashes Aeneas at every call site. Semantics
+    preserved; crate tests 153/153.
+  - subtle is modeled by hand in gen/CurveField/{Types,Funs}External.lean
+    (Choice := U8; black_box = identity; ct_eq = equality; conditional_* =
+    if-then-else on the {0,1} invariant). NEVER --extract-opaque-bodies or
+    --include subtle::_ without opaques (crashes aeneas via core internals).
+================================================================================

@@ -35,6 +35,7 @@ PROOFS=(
   Field
   InvertSpec
   FieldMain
+  FeQ
 )
 
 cd "$AENEAS_LEAN"

@@ -36,6 +36,14 @@ PROOFS=(
   InvertSpec
   FieldMain
   FeQ
+  EdCurve
+  Square2Spec
+  EdDenote
+  EdDouble
+  EdAddProjNiels
+  EdAddAffNiels
+  EdConvert
+  EdMain
 )
 
 cd "$AENEAS_LEAN"

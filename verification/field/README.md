@@ -129,3 +129,33 @@ No security findings: every overflow side condition and both
 `debug_assert!`s discharged under the dalek 2⁵⁴ limb discipline. One caveat
 documented: `pow2k(_, 0)` would wrap `k−1` in release Rust (callers all pass
 constants ≥ 1; the model enforces k ≥ 1 via the surviving `massert`).
+
+## Edwards point arithmetic (Tier 1): the addition-law theorem (Proofs/Ed*.lean)
+
+**The transpiled point operations are proven to implement the complete twisted
+Edwards addition law** — `CurveFieldProofs.edwardsImplementation :
+IsEdwardsImplementation` ([Proofs/EdMain.lean](Proofs/EdMain.lean)), axiom-clean.
+For valid on-curve inputs, the transpiled `EdwardsPoint` add / sub / double /
+neg / identity are total (no panic — every limb bound and `debug_assert`
+discharged) and denote, via (x,y) = (X/Z, Y/Z), exactly to
+
+    edAdd (x1,y1) (x2,y2) = ( (x1*y2 + x2*y1) / (1 + d*x1*x2*y1*y2),
+                              (y1*y2 + x1*x2) / (1 - d*x1*x2*y1*y2) )
+
+with d = -121665/121666. The extraction was widened to include
+`backend::serial::curve_models` + `edwards` (same `CurveField` module; the 14
+field/FeQ proof files compile unchanged; scalar-mul/AVX2/decompress remain
+opaque — out of scope).
+
+| File | Result |
+|------|--------|
+| `Proofs/EdCurve.lean` | The math layer: `edD`, `OnCurve`, `edAdd`, **`edD_not_square`** (kernel Euler criterion), **`completeness`** (Bernstein–Lange: denominators never vanish), `edAdd_closure`, id/neg/comm laws. |
+| `Proofs/Square2Spec.lean` | `square2` = 2a² (the op point doubling needs). |
+| `Proofs/EdDenote.lean` | Validity predicates for all 5 representations (with the **explicit `Z ≠ 0`** the Rust leaves implicit), denotations, `EDWARDS_D`/`D2` kernel-checked constant specs, identity runners. |
+| `Proofs/EdDouble · EdAddProjNiels · EdAddAffNiels · EdConvert.lean` | Coordinate-exact specs of every transpiled formula (HWCD mixed add/sub ×4, dbl-2008-bbjlp double, conversions, negs) with honest per-coordinate limb bounds. |
+| `Proofs/EdMain.lean` | **`edwardsImplementation`**: top-level add/sub/double/neg/identity law theorems + `impl_add_comm_ed`, `impl_add_id_ed`, `impl_add_neg_ed`. |
+
+Not claimed (Tier 2 / future): associativity of `edAdd` (would come from the
+birational map to mathlib's Weierstrass group), scalar multiplication
+(blocked on upstream Aeneas internal errors), decompress/compress, and the
+AVX2 vector backend.

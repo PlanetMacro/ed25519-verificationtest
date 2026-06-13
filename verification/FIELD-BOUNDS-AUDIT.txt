@@ -1,0 +1,127 @@
+================================================================================
+ FIELD LIMB-BOUND AUDIT — curve25519/solana-ed25519
+ Date: 2026-06-11
+ Question: does any call site feed an under-reduced field element into a
+           multiply/square (limb >= 2^54), chain additions toward a u64
+           overflow (limb >= 2^64), or call pow2k with k = 0 — i.e. can the
+           "too many unreduced additions" hazard actually occur in this crate?
+================================================================================
+
+RESULT:  NO VIOLATIONS FOUND.  No real algebraic bug.
+  - The formally-verified serial-u64 backend (FieldElement51) is CLEAN at
+    every call site across the whole crate.
+  - The scalar backend (Scalar52, modulus = group order l) is CLEAN.
+  - The AVX2 vector backend (FieldElement2625x4 — a SEPARATE, NOT formally
+    verified field implementation) is also within contract everywhere; two
+    "tight-margin" spots are noted below (both safe; one is a documentation
+    looseness inherited verbatim from upstream curve25519-dalek).
+
+This file is an AUDIT RECORD, not a list of bugs (there are none). It exists
+so the negative result and the two margin notes are on record.
+
+--------------------------------------------------------------------------------
+ THE CONTRACT THAT WAS CHECKED (serial-u64 FieldElement51, radix 2^51)
+--------------------------------------------------------------------------------
+  * A "reduced" element has every limb < 2^52 (proved: reduce output
+    < 2^51 + 19*2^13; mul/square output < 2^51 + 2^13).
+  * Add / AddAssign do NOT reduce: limb(a+b) = limb(a) + limb(b).
+  * sub, negate add 16p then reduce -> output reduced (< 2^52).
+  * square2 = square then double each limb -> limbs < 2^53 (k = 2, NOT reduced).
+  * mul, square, pow2k have a HARD precondition debug_assert!(limb < 2^54) on
+    every input limb; pow2k additionally debug_assert!(k > 0).
+  Tracking unit k(x) = ceil(maxlimb(x)/2^52): reduced => k=1; add sums the k's;
+  feeding k>=4 into mul/square/pow2k crosses the loose 2^54 line (precise
+  per-limb ~2^51 bound tolerates up to ~7 reduced summands); k>=8 is a definite
+  breach; a limb reaching 2^12 units overflows u64.
+  CONSEQUENCE OF A BREACH (if one existed): debug builds panic at the
+  debug_assert; RELEASE builds strip it and silently compute a wrong field
+  element (the 128-bit carry chain overflows). This is exactly the
+  "no panic / no silent wrap" property the Lean proofs establish per-operation.
+
+--------------------------------------------------------------------------------
+ SCOPE / METHOD
+--------------------------------------------------------------------------------
+  12-agent audit (1 contract + 9 parallel file auditors + adversarial
+  verification of every non-"safe" flag). Each field-element binding was
+  assigned a worst-case limb bound by provenance; every mul / square / square2 /
+  pow2k / add call site was checked against the contract above. Function inputs
+  to crate-public ops were taken as reduced (k=1) — the standard dalek calling
+  convention. ~470 call sites examined.
+
+  Files audited (all under curve25519/solana-ed25519/src/):
+    backend/serial/curve_models.rs ....... 71 sites, all safe
+    edwards.rs (+ edwards/affine.rs) ..... 59 sites, all safe
+    montgomery.rs ........................ 54 sites, all safe
+    ristretto.rs (+ ristretto/elligator) . 92 sites, all safe
+    short_weierstrass.rs (non-dalek) ..... 48 sites, all safe
+    lizard/{jacobi_quartic,lizard_ristretto,lizard_constants}.rs . 48, all safe
+    field.rs (+ u64/constants.rs) ........ 46 sites, all safe (all pow2k k>0)
+    scalar.rs (+ u64/scalar.rs) .......... 38 sites, all safe (Scalar52 backend)
+    backend/vector/avx2/{field,edwards,packed_simd}.rs . 18 sites, 2 tight-margin
+
+  NOT in scope (no in-Rust field arithmetic to audit): syscall/bls12-381-syscall,
+  syscall/bn254-syscall (thin syscall wrappers), experimental/ed25519-pokos,
+  curve25519/curve25519-cuda. The scalar HEEA decomposition (scalar/heea.rs)
+  uses a separate I256 integer type, reviewed, no FieldElement51 arithmetic.
+
+--------------------------------------------------------------------------------
+ KEY POSITIVE FINDINGS (why the hazard does NOT occur)
+--------------------------------------------------------------------------------
+  * curve_models.rs (the load-bearing point formulas — Edwards/Ristretto/
+    Montgomery all delegate here): the CompletedPoint conversions feed muls
+    operands like ZZ2 + TT2d, i.e. a sum of (a sum of 2 reduced) + 1 reduced =
+    k=3 worst case, exactly < 2^54. Every formula stays k<=3. Vanilla dalek,
+    unmodified.
+  * Montgomery ladder (differential_add_and_double): inductive invariant holds —
+    the four working coordinates are reduced (k=1) on every iteration, so all
+    ladder muls see k<=2 operands.
+  * field.rs inversion/sqrt chains: every pow2k is called with a positive
+    literal exponent (1,2,5,10,20,50,100,250...), so pow2k k>0 always holds;
+    every mul/square operand is freshly reduced (k=1).
+  * short_weierstrass.rs and lizard/* (the non-vanilla, hand-written formulas
+    that were the prime suspects): traced from scratch — every mul/square
+    operand is k<=2; no add chain exceeds k=2. Clean.
+  * scalar.rs: Scalar52 add/sub reduce mod l immediately; no unreduced
+    accumulation.
+
+--------------------------------------------------------------------------------
+ TWO TIGHT-MARGIN NOTES (AVX2 vector backend only — both SAFE, not bugs)
+--------------------------------------------------------------------------------
+ These are in backend/vector/avx2/, a DIFFERENT field implementation
+ (FieldElement2625x4, packed radix-25.5 32-bit limbs) that uses a fractional
+ log2 bound parameter b (even limb < 2^(26+b), odd limb < 2^(25+b)) — NOT the
+ FieldElement51 contract, and NOT covered by the Lean proofs. Both spots match
+ upstream curve25519-dalek exactly.
+
+ [NOTE-1] avx2/edwards.rs:250-252  Neg for &CachedPoint -> negate_lazy
+   Severity: fragile-undocumented (NOT a reachable bug).
+   The CachedPoint struct invariant is the OPEN bound b < 1.0, but
+   negate_lazy's documented precondition is b < 0.999 and its TRUE underflow
+   ceiling is b <= 0.99999959 (smallest 2p even limb = 2^26 - 19, doubled =
+   134217690 = 2^26.99999959). So a hypothetical CachedPoint with an even limb
+   at b in (0.99999959, 1.0) would underflow. WHY IT CANNOT HAPPEN: every
+   CachedPoint actually negated is either freshly built by CachedPoint::from
+   (b < 0.007) or read from the static precomputed tables (all limbs
+   <= 2^26 = 67108864, verified across all 73 CachedPoint constant blocks in
+   constants.rs) — ~142x below the underflow ceiling — and negation happens at
+   most once per value (the double-negation path warned about at edwards.rs:188
+   does not exist). Recommendation: tighten the doc/invariant (state the
+   CachedPoint bound as b <= 2^26 actual, or the method precond as the true
+   0.99999959) — cosmetic, no code change needed. Same looseness exists upstream.
+
+ [NOTE-2] avx2/edwards.rs:159 -> 172  ExtendedPoint::double, S_8 lane
+   Severity: none (false alarm; flagged only for visibility).
+   The doubling tmp0 C-lane = S_1 - S_2 + 2*S_3 reaches b ~ 2.326; the consuming
+   Mul precondition is self b < 2.5. ~0.17 bit of headroom (~1.13x). Provably
+   within bound and identical to upstream dalek's documented b < 2.33 annotation.
+
+--------------------------------------------------------------------------------
+ BOTTOM LINE
+--------------------------------------------------------------------------------
+ The "chained additions exceed the limb bound -> silent wrong result" hazard
+ does NOT occur anywhere in this repository. Every call site respects the
+ limb-bound discipline. The verified serial-u64 backend is clean by audit and
+ (per-operation) by the Lean proofs; the AVX2 backend is clean by audit with two
+ within-spec tight margins, one worth a one-line documentation tightening.
+ No code change is required for correctness.
+================================================================================
